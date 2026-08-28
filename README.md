@@ -55,7 +55,7 @@ actually earns the "LangGraph" keyword instead of just chaining prompts.
 - Everything else (state, nodes, graph wiring, FastAPI) is fully implemented,
   not pseudocode — you should be able to run this today.
 
-## Measuring "reduced incomplete answers by X%" for your resume bullet
+## Measuring "reduced incomplete answers by X%"
 
 Log every critic verdict (`state["critic_log"]`) to a JSONL file. After ~20-30
 test queries, compute: (# sub-questions approved on first pass) vs. (# that
