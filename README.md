@@ -1,88 +1,117 @@
 # Multi-Agent Research & Report Assistant
 
-LangGraph orchestration on top of your existing ChromaDB + Sentence-Transformers +
-GROQ/LLaMA stack (same retrieval setup as AI Second Brain). Four agents — Planner,
-Researcher, Critic, Writer — collaborate via a StateGraph. The Critic can send a
-sub-question back to the Researcher for another pass, which is the part that
-actually earns the "LangGraph" keyword instead of just chaining prompts.
+A LangGraph-orchestrated research assistant where specialized agents collaborate — plan, retrieve, critique, and write — to produce grounded, gap-aware reports instead of a single monolithic LLM call.
+
+## Overview
+
+Most "RAG chatbot" projects are a single prompt wrapped around a vector search. This project instead coordinates four distinct agents through an explicit state graph, with a critic agent that can send a sub-question back for another retrieval pass — real conditional control flow, not just a linear chain of prompts.
+
+The retrieval layer reuses an existing production knowledge base (ChromaDB + Sentence-Transformers embeddings, per-user scoped) rather than building a new one, so the project is scoped around orchestration, not re-solving retrieval from scratch.
 
 ## Architecture
 
 ```
         ┌─────────┐
-        │ planner │  splits query into 2-3 sub-questions
+        │ planner │  splits the query into 2-3 sub-questions
         └────┬────┘
              │
      ┌───────▼────────┐
-     │   researcher    │◄────────┐  retrieves per sub-question
-     └───────┬────────┘          │  (ChromaDB, falls back to web search)
+     │   researcher    │◄────────┐  retrieves evidence per sub-question
+     └───────┬────────┘          │  (ChromaDB, with a web-search fallback)
              │                   │
-        ┌────▼────┐              │ retry (max 2x)
-        │  critic │──────────────┘  "does this answer the sub-question?"
-        └────┬────┘
-             │ all sub-questions covered
+        ┌────▼────┐              │  retry (bounded, max 2 attempts)
+        │  critic │──────────────┘  judges whether evidence actually
+        └────┬────┘                  answers the sub-question
+             │ all sub-questions resolved
         ┌────▼────┐
-        │  writer  │  synthesizes final report
-        └─────────┘
+        │  writer  │  synthesizes the final report, explicitly flagging
+        └─────────┘  any sub-question that never got sufficient evidence
 ```
 
-## Day 1 checklist (linear flow)
+## Key Design Decision: The Critic Doesn't Just Retry — It Gates
 
-1. `pip install -r requirements.txt`
-2. Point `app/retrieval.py` at your existing AI Second Brain ChromaDB collection
-   (same collection, same `all-MiniLM-L6-v2` embedder — don't rebuild anything).
-3. Set `GROQ_API_KEY` in your environment.
-4. Run `python app/graph.py "your test query"` and confirm you get a report out,
-   planner → researcher → critic (approve first pass) → writer.
+A naive RAG pipeline retrieves once and writes from whatever comes back, whether or not it's actually relevant. Here, the critic agent evaluates evidence per sub-question before it ever reaches the writer. If evidence is insufficient, the sub-question is retried up to a bounded limit; if it's still insufficient after retries, it is explicitly marked as a gap in the final report rather than silently papered over.
 
-## Day 2 checklist (the actual loop)
+This was verified directly, not assumed: in a test run asking about CI/CD and Kubernetes experience (not present in the underlying documents), all three sub-questions were correctly rejected across retries and the final report stated plainly that no relevant evidence existed — instead of generating plausible-sounding but fabricated claims. The same run structure, on a query with strong supporting evidence, produced approvals on the first pass with no unnecessary retries.
 
-1. In `app/agents.py`, tighten the critic's rejection criteria so it actually
-   triggers a re-search sometimes (test with a vague/narrow sub-question).
-2. Confirm `graph.py`'s conditional edge sends rejected sub-questions back to
-   `researcher` and caps retries (`MAX_RETRIES` in `state.py`) so it can't loop
-   forever.
-3. Wrap with FastAPI (`app/main.py`) — `uvicorn app.main:app --reload`.
-4. Optional: Streamlit demo (`streamlit_app.py`) for a screenshot/GIF for your
-   portfolio and resume bullet.
+| Test query | Sub-questions | Approved (first pass) | Exhausted (flagged as gap) |
+|---|---|---|---|
+| Project portfolio overview | 3 | 2 | 1 |
+| Background, projects, and tech stack | 3 | 3 | 0 |
+| CI/CD and Kubernetes experience | 3 | 0 | 3 |
 
-## What's stubbed vs. real
+**Current limitation:** retries currently re-query with the same sub-question text, so a retry rarely surfaces new evidence on its own — the loop's proven value so far is gap detection and hallucination avoidance, not query refinement. Adding LLM-driven query reformulation on retry (using the critic's rejection reason to rewrite the search) is the natural next step to make retries substantively different from the first attempt.
 
-- `retrieval.py` — has a real ChromaDB query function AND a real (optional)
-  web-search fallback stub you fill in with whatever search API you have
-  access to. Swap in your Second Brain collection name and you're live.
-- `llm.py` — real GROQ chat completion calls, model configurable via env var.
-- Everything else (state, nodes, graph wiring, FastAPI) is fully implemented,
-  not pseudocode — you should be able to run this today.
+## Tech Stack
 
-## Resume bullet (verified against real test runs)
+| Layer | Technology |
+|---|---|
+| Orchestration | LangGraph (StateGraph, conditional edges) |
+| LLM | Groq API (`openai/gpt-oss-120b`) |
+| Vector store | ChromaDB, per-user metadata filtering |
+| Embeddings | Sentence-Transformers (`all-MiniLM-L6-v2`) |
+| Service layer | FastAPI |
+| Demo UI | Streamlit |
 
-> Built a multi-agent research assistant using LangGraph with a
-> planner-researcher-critic-writer architecture; critic agent evaluates
-> retrieved evidence per sub-question and flags unanswerable gaps instead of
-> generating unsupported content, verified across test runs including cases
-> with no relevant source material.
+## Project Structure
 
-**Why this framing, not a retry-reduction percentage:** in real test runs
-(logged below), retries currently re-query with the exact same sub-question
-text, so a rejected sub-question almost always gets rejected again on
-retry — the retry doesn't yet change what gets retrieved. What the loop does
-reliably do is stop the writer from fabricating an answer when evidence is
-genuinely missing (e.g. a query about CI/CD/Kubernetes experience — not
-present in the source documents — correctly resulted in 3/3 sub-questions
-exhausted and flagged as gaps, with no hallucinated content in the report).
-That's the claim this project can actually back up today.
+```
+app/
+├── state.py       # Shared graph state schema
+├── llm.py         # Groq chat completion wrapper
+├── retrieval.py   # ChromaDB query layer with web-search fallback
+├── agents.py      # Planner, researcher, critic, and writer node functions
+├── graph.py       # LangGraph StateGraph wiring and conditional routing
+└── main.py        # FastAPI service (POST /research)
+streamlit_app.py    # Interactive demo UI
+```
 
-**If you want to earn the stronger "reduces incomplete answers" claim
-later:** add query reformulation on retry — an LLM call that rewrites the
-sub-question using the critic's rejection reason before the researcher
-retries, so attempt 2 is a genuinely different search, not a repeat of
-attempt 1. That's the next real improvement, not yet built.
+## Getting Started
 
-### Real test runs so far
+### Prerequisites
+- Python 3.11+
+- A Groq API key
+- An existing ChromaDB collection to query against (this project does not build a knowledge base — it queries one)
 
-| Query | Sub-questions | Approved (1st pass) | Rejected → exhausted | Notes |
-|---|---|---|---|---|
-| "What projects has Parag built?" | 3 | 2 | 1 | Correctly flagged missing dev-context info as a gap |
-| "Who is Parag... projects... tech" | 3 | 3 | 0 | Clean run after refreshing the knowledge base |
-| "What CI/CD or Kubernetes experience does Parag have?" | 3 | 0 | 3 | Correctly reported no hallucinated CI/CD/K8s claims |
+### Installation
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Set the following in `.env`:
+
+```
+GROQ_API_KEY=your_key_here
+GROQ_MODEL=openai/gpt-oss-120b
+CHROMA_DB_PATH=/path/to/your/chroma_db
+SECOND_BRAIN_USER_ID=your_numeric_user_id
+```
+
+### Running
+
+```bash
+# Run a single query from the command line
+python -m app.graph "your research question"
+
+# Run as an API service
+uvicorn app.main:app --reload
+
+# Run the interactive demo
+streamlit run streamlit_app.py
+```
+
+## API
+
+**`POST /research`**
+
+```json
+{ "query": "your research question" }
+```
+
+Returns the synthesized report and the full critic decision log for every sub-question, including any retries.
+
+## Author
+
+Parag Pawar — [github.com/paragpawar0077](https://github.com/paragpawar0077)
