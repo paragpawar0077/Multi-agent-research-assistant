@@ -16,7 +16,15 @@ from .retrieval import retrieve
 PLANNER_SYSTEM = """You break a user's research query into 2-3 focused, \
 non-overlapping sub-questions that together would let someone answer the \
 original query well. Return ONLY a JSON array of strings, no preamble, no \
-markdown fences."""
+markdown fences.
+
+Context: the underlying knowledge base is a single individual's personal \
+resume, projects, and career history — not a company, product, or \
+multi-region business. If a query is ambiguous (e.g. uses words like \
+"regions", "markets", "performance"), interpret it in terms of that \
+individual's skills, projects, and career — not as a business/enterprise \
+question — unless the query explicitly names a company or business \
+context."""
 
 
 def planner_node(state: ResearchState) -> dict:
@@ -72,7 +80,10 @@ def critic_node(state: ResearchState) -> dict:
     sq = sub_questions[idx]
 
     user_msg = f"Sub-question: {sq['text']}\n\nEvidence:\n{sq['evidence'] or '(empty)'}"
-    raw = chat(CRITIC_SYSTEM, user_msg, temperature=0.0)
+    # Critic only needs to output a simple approve/reject judgment, not
+    # synthesize an answer — use Groq's smaller, faster model here to cut
+    # latency. This can add up to 6 calls per query, so the saving compounds.
+    raw = chat(CRITIC_SYSTEM, user_msg, model="openai/gpt-oss-20b", temperature=0.0)
     try:
         verdict = json.loads(_strip_fences(raw))
     except json.JSONDecodeError:
