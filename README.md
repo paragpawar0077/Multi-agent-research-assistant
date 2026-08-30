@@ -55,10 +55,34 @@ actually earns the "LangGraph" keyword instead of just chaining prompts.
 - Everything else (state, nodes, graph wiring, FastAPI) is fully implemented,
   not pseudocode — you should be able to run this today.
 
-## Measuring "reduced incomplete answers by X%"
+## Resume bullet (verified against real test runs)
 
-Log every critic verdict (`state["critic_log"]`) to a JSONL file. After ~20-30
-test queries, compute: (# sub-questions approved on first pass) vs. (# that
-needed retries) vs. (# that hit MAX_RETRIES and were flagged incomplete in the
-final report anyway). Compare against a baseline where you force
-`MAX_RETRIES=0` (no loop). That delta is your X%.
+> Built a multi-agent research assistant using LangGraph with a
+> planner-researcher-critic-writer architecture; critic agent evaluates
+> retrieved evidence per sub-question and flags unanswerable gaps instead of
+> generating unsupported content, verified across test runs including cases
+> with no relevant source material.
+
+**Why this framing, not a retry-reduction percentage:** in real test runs
+(logged below), retries currently re-query with the exact same sub-question
+text, so a rejected sub-question almost always gets rejected again on
+retry — the retry doesn't yet change what gets retrieved. What the loop does
+reliably do is stop the writer from fabricating an answer when evidence is
+genuinely missing (e.g. a query about CI/CD/Kubernetes experience — not
+present in the source documents — correctly resulted in 3/3 sub-questions
+exhausted and flagged as gaps, with no hallucinated content in the report).
+That's the claim this project can actually back up today.
+
+**If you want to earn the stronger "reduces incomplete answers" claim
+later:** add query reformulation on retry — an LLM call that rewrites the
+sub-question using the critic's rejection reason before the researcher
+retries, so attempt 2 is a genuinely different search, not a repeat of
+attempt 1. That's the next real improvement, not yet built.
+
+### Real test runs so far
+
+| Query | Sub-questions | Approved (1st pass) | Rejected → exhausted | Notes |
+|---|---|---|---|---|
+| "What projects has Parag built?" | 3 | 2 | 1 | Correctly flagged missing dev-context info as a gap |
+| "Who is Parag... projects... tech" | 3 | 3 | 0 | Clean run after refreshing the knowledge base |
+| "What CI/CD or Kubernetes experience does Parag have?" | 3 | 0 | 3 | Correctly reported no hallucinated CI/CD/K8s claims |

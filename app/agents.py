@@ -136,10 +136,20 @@ sub-question whose evidence was marked exhausted/incomplete."""
 
 
 def writer_node(state: ResearchState) -> dict:
+    # Cap evidence per sub-question so the combined writer prompt doesn't
+    # blow past Groq's free-tier TPM limit (8000 tokens/min). Rough
+    # heuristic: ~4 chars/token, so 3000 chars per sub-question keeps a
+    # 3-question report comfortably under budget with room for the system
+    # prompt and instructions.
+    MAX_EVIDENCE_CHARS = 3000
+
     sections = []
     gaps = []
     for sq in state["sub_questions"]:
-        sections.append(f"## {sq['text']}\n\nEvidence:\n{sq['evidence'] or '(none found)'}")
+        evidence = sq["evidence"] or "(none found)"
+        if len(evidence) > MAX_EVIDENCE_CHARS:
+            evidence = evidence[:MAX_EVIDENCE_CHARS] + "\n[...truncated to fit token budget...]"
+        sections.append(f"## {sq['text']}\n\nEvidence:\n{evidence}")
         if sq["status"] == "exhausted":
             gaps.append(sq["text"])
 
